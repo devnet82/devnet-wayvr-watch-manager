@@ -56,6 +56,7 @@ Developed for and live-tested with:
 - WayVR 26.8.0
 - AMD Radeon RX 9070 XT
 - wireless ADB for Quest controller battery data
+- Meta VR Developer CLI (`metavr`) 1.3.1.1.0 as an optional Quest setup/debug tool
 
 The package is intentionally focused on this stack rather than claiming universal VR-overlay compatibility.
 
@@ -84,6 +85,20 @@ sudo pacman -S --needed android-tools
 ```
 
 The Quest must already be authorised for ADB. Wireless ADB is optional; if it is unavailable the controller values safely fall back to `--%` and the rest of the watch continues working.
+
+### Optional: Meta VR Developer CLI (`metavr`)
+
+`metavr` was used on the reference PC while setting up and debugging the Quest connection, but **Devnet WayVR Watch Manager does not require it at runtime**.
+
+The actual controller battery reader talks to the Quest through standard Android `adb` from the `android-tools` package. This keeps the running service independent of Meta's CLI.
+
+On the reference setup, Meta VR Developer CLI 1.3.1.1.0 is installed at:
+
+```text
+~/.metavr/bin/metavr
+```
+
+It is useful for Quest device discovery and Meta-side development/debug tasks. If you already have it installed, keep it; the Watch Manager can coexist with it. A machine with a working authorised ADB connection does not need `metavr` just to show controller battery percentages.
 
 ---
 
@@ -257,6 +272,7 @@ See `TEST-REPORT.md`, `CHANGELOG.md` and `RELEASE-NOTES.md` for details.
 
 - WayVR: https://github.com/wayvr-org/wayvr
 - WiVRn: https://github.com/WiVRn/WiVRn
+- Meta VR Developer CLI: optional setup/debug tool on the reference Quest development setup
 
 WayVR HMD/controller icon assets included here are derived from the corresponding WayVR assets. Their upstream SVGs note Material Symbols by Google; see the SVG source comments for attribution.
 
