@@ -1,0 +1,47 @@
+name: Devnet WayVR Watch Manager v0.1.14 package QA
+
+on:
+  push:
+    branches:
+      - main
+      - release-v0.1.14
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  package-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show tool versions
+        run: |
+          bash --version | head -n1
+          python3 --version
+
+      - name: Python syntax compile
+        run: python3 -m compileall -q app tests
+
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          for f in bin/*; do bash -n "$f"; done
+
+      - name: Run functional tests
+        run: python3 tests/test_all.py
+
+      - name: Build release archive
+        run: |
+          git archive --format=zip --prefix=devnet-wayvr-watch-manager-v0.1.14/ HEAD -o devnet-wayvr-watch-manager-v0.1.14.zip
+          sha256sum devnet-wayvr-watch-manager-v0.1.14.zip > devnet-wayvr-watch-manager-v0.1.14.zip.sha256
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: devnet-wayvr-watch-manager-v0.1.14
+          path: |
+            devnet-wayvr-watch-manager-v0.1.14.zip
+            devnet-wayvr-watch-manager-v0.1.14.zip.sha256
+          if-no-files-found: error
