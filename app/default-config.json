@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "show_devices": true,
+  "show_quest_controller_batteries": true,
+  "show_local_day": true,
+  "show_local_date": true,
+  "show_stock_timezones": true,
+  "metrics": {
+    "cpu_temp": false,
+    "cpu_usage": false,
+    "gpu_temp": false,
+    "gpu_usage": false,
+    "ram_usage": false,
+    "vram_usage": false,
+    "uptime": false
+  },
+  "metric_order": [
+    "gpu_temp",
+    "gpu_usage",
+    "cpu_temp",
+    "cpu_usage",
+    "vram_usage",
+    "ram_usage",
+    "uptime"
+  ],
+  "timezones": [],
+  "show_ipd": false,
+  "show_timer": false,
+  "preview_mode": "wrist"
+}
