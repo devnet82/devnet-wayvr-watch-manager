@@ -1,0 +1,47 @@
+name: Publish Devnet WayVR Watch Manager v0.1.14
+
+on:
+  push:
+    branches:
+      - publish-v0.1.14
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Run release QA
+        run: |
+          python3 -m compileall -q app tests
+          bash -n install.sh
+          bash -n uninstall.sh
+          for f in bin/*; do bash -n "$f"; done
+          python3 tests/test_all.py
+
+      - name: Build release archive and checksum
+        run: |
+          git archive --format=zip --prefix=devnet-wayvr-watch-manager-v0.1.14/ main -o devnet-wayvr-watch-manager-v0.1.14.zip
+          sha256sum devnet-wayvr-watch-manager-v0.1.14.zip > devnet-wayvr-watch-manager-v0.1.14.zip.sha256
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.14 >/dev/null 2>&1; then
+            echo "Release v0.1.14 already exists; refusing to replace it."
+            exit 1
+          fi
+          gh release create v0.1.14 \
+            devnet-wayvr-watch-manager-v0.1.14.zip \
+            devnet-wayvr-watch-manager-v0.1.14.zip.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target main \
+            --title "Devnet WayVR Watch Manager v0.1.14" \
+            --notes-file RELEASE-NOTES.md
