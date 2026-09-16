@@ -1,0 +1,12 @@
+[Unit]
+Description=Devnet WayVR Watch live metrics
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/devnet-wayvr-watch-metrics --interval 1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
