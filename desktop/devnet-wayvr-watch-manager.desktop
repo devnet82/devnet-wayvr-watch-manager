@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Devnet WayVR Watch Manager
+Comment=Customise the standard WayVR wrist watch with live preview and PC metrics
+Exec=devnet-wayvr-watch-manager
+Icon=preferences-system
+Terminal=false
+Categories=Utility;Settings;
+StartupNotify=true
