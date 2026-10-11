@@ -26,7 +26,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p /tmp/devnet-master-v0.1.7 evidence/"$APP_ID"/{native,inventory,installed,strict} evidence/reports
-          base=https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/c547d19992bce04902a2b806344b3bb3baf67416/qa/master-v0.1.7
+          base=https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/9de8c6bb36ae47e8ea7d1681223dd4bd9ba53967/qa/master-v0.1.7
           curl -fLsS --retry 3 "$base/gate.py" -o /tmp/devnet-master-v0.1.7/gate.py
           curl -fLsS --retry 3 "$base/candidates.json" -o /tmp/devnet-master-v0.1.7/candidates.json
           python3 -m py_compile /tmp/devnet-master-v0.1.7/gate.py
