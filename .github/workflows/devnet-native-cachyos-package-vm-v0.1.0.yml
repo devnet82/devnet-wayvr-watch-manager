@@ -1,0 +1,120 @@
+name: Devnet native CachyOS package VM QA v0.1.0
+on:
+  push:
+    branches:
+      - qa/cachyos-package-vm-v0.1.0
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  native-cachyos-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: \${{ github.token }}
+      PACKAGE_TAG: qa-package-v0.1.34
+      PACKAGE_NAME: devnet-wayvr-watch-manager-v0.1.34.zip
+      PACKAGE_SHA256: 1a0d8740649165f4bd0098b025a864bf784ac8e6aea046b70d80f7f5a94cae58
+      PACKAGE_VERSION: "0.1.34"
+      QA_SOURCE_SHA: d8e4447d19e77a77dc355dc07e72c0c5c3edf741
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare QEMU and verified app/ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 qemu-utils mtools dosfstools
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          mkdir -p /tmp/devnet-guest evidence
+          base=https://iso.cachyos.org/desktop/260809
+          name=cachyos-desktop-linux-260809.iso
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1200 "$base/$name.sha256" -o "/tmp/devnet-guest/$name.sha256"
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 1200 "$base/$name" -o "/tmp/devnet-guest/$name"
+          (cd /tmp/devnet-guest && sha256sum -c "$name.sha256") | tee evidence/authentic-iso-sha256.txt
+          gh release download "$PACKAGE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_NAME" --dir /tmp/devnet-guest
+          printf '%s  %s\n' "$PACKAGE_SHA256" "/tmp/devnet-guest/$PACKAGE_NAME" | sha256sum -c - | tee evidence/exact-zip-sha256.txt
+      - name: Prepare disposable FAT guest evidence disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/$QA_SOURCE_SHA/qa/portfolio-cachyos-vm-v0.1.0"
+          curl -fLsS "$root/guest_package_qa.py" -o /tmp/devnet-guest/guest_package_qa.py
+          curl -fLsS "$root/qemu_control.py" -o /tmp/devnet-guest/qemu_control.py
+          python3 -m py_compile /tmp/devnet-guest/guest_package_qa.py /tmp/devnet-guest/qemu_control.py
+          truncate -s 128M /tmp/devnet-guest/control.img
+          mkfs.vfat -F 32 -n DEVNETQA /tmp/devnet-guest/control.img
+          image=/tmp/devnet-guest/control.img
+          mcopy -i "$image" /tmp/devnet-guest/guest_package_qa.py ::/guest_package_qa.py
+          mcopy -i "$image" "/tmp/devnet-guest/$PACKAGE_NAME" ::/candidate.zip
+          cat > /tmp/devnet-guest/install-guest.sh <<'GUEST'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          exec >/mnt/controller.log 2>&1
+          trap 'rc=$?; echo VM_GUEST_CONTROLLER_EXIT=$rc; sync' EXIT
+          echo NATIVE_CACHYOS_APP_QA_START
+          cat /etc/os-release
+          uname -r
+          python3 /mnt/guest_package_qa.py /mnt/candidate.zip \
+            HASH_LITERAL VERSION_LITERAL /mnt/qa-result.json /mnt/package-tests.log
+          GUEST
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path("/tmp/devnet-guest/install-guest.sh")
+          s=p.read_text().replace("HASH_LITERAL",os.environ["PACKAGE_SHA256"]).replace("VERSION_LITERAL",os.environ["PACKAGE_VERSION"])
+          p.write_text(s)
+          PY
+          bash -n /tmp/devnet-guest/install-guest.sh
+          mcopy -i "$image" /tmp/devnet-guest/install-guest.sh ::/install-guest.sh
+          mdir -i "$image" ::/ | tee evidence/control-manifest.txt
+      - name: Boot real CachyOS and execute test suites unprivileged
+        shell: bash
+        run: |
+          set -euo pipefail
+          qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 -smp 2 \
+            -drive file=/tmp/devnet-guest/cachyos-desktop-linux-260809.iso,media=cdrom,if=ide \
+            -drive if=none,id=ctl,file=/tmp/devnet-guest/control.img,format=raw \
+            -device virtio-blk-pci,drive=ctl,serial=DEVNETCONTROL \
+            -nic none -boot order=d -vga std -display none \
+            -serial file:evidence/serial.log \
+            -monitor unix:/tmp/devnet-guest/qemu-monitor.sock,server=on,wait=off \
+            -daemonize -pidfile /tmp/devnet-guest/qemu.pid
+          sleep 115
+          python3 /tmp/devnet-guest/qemu_control.py /tmp/devnet-guest/qemu-monitor.sock framebuffer --image evidence/guest-before-tests.ppm
+          python3 /tmp/devnet-guest/qemu_control.py /tmp/devnet-guest/qemu-monitor.sock begin-install
+          for attempt in $(seq 1 85); do
+            mcopy -o -i /tmp/devnet-guest/control.img ::/controller.log evidence/controller.log >/dev/null 2>&1 || true
+            mcopy -o -i /tmp/devnet-guest/control.img ::/package-tests.log evidence/package-tests.log >/dev/null 2>&1 || true
+            if mcopy -o -i /tmp/devnet-guest/control.img ::/qa-result.json evidence/qa-result.json >/dev/null 2>&1; then
+              if python3 -c 'import json;json.load(open("evidence/qa-result.json"))' 2>/dev/null; then
+                echo REAL_CACHYOS_PACKAGE_REPORT_CAPTURED
+                break
+              fi
+            fi
+            sleep 8
+          done
+          test -s evidence/qa-result.json
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open("evidence/qa-result.json"))
+          assert d["format"]=="devnet-native-cachyos-vm-qa-v0.1.0",d
+          for item in ["native_cachyos","control_disk_identity","exact_sha256","zip_integrity","package_version","native_syntax"]:
+              assert d["checks"][item]["status"]=="PASS",(item,d)
+          print("REAL_CACHYOS_NATIVE_APP_CHECKS_PASS",os.environ["PACKAGE_NAME"])
+          for label,v in d["checks"].items():
+              print(label,v["status"],v["detail"])
+          for test in d["tests"]:print("PACKAGED_TEST",test)
+          assert d["release_decision"]=="BLOCKED",d
+          assert d["overall"]!="FAIL","Native VM test failures; see report"
+          PY
+      - name: Preserve native guest evidence even on failed tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exact-native-cachyos-package-vm-v0.1.0
+          path: evidence/
+          retention-days: 14
+          if-no-files-found: warn
