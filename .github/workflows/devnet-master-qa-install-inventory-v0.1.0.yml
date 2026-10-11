@@ -1,0 +1,43 @@
+name: Devnet Master QA exact ZIP installation inventory v0.1.0
+on:
+  push:
+    branches: [qa/master-installed-lifecycle-v0.1.0]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  original-zip-install-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_TAG: "qa-package-v0.1.34"
+      PACKAGE_ZIP: "devnet-wayvr-watch-manager-v0.1.34.zip"
+      PACKAGE_SHA256: "1a0d8740649165f4bd0098b025a864bf784ac8e6aea046b70d80f7f5a94cae58"
+      APP_ID: "wayvr-watch-v0.1.34"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve original unpublished asset and verify byte-exact checksum
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/devnet-master-qa evidence
+          gh release download "$PACKAGE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_ZIP" --dir /tmp/devnet-master-qa
+          printf '%s  %s\n' "$PACKAGE_SHA256" "/tmp/devnet-master-qa/$PACKAGE_ZIP" | sha256sum -c - | tee evidence/archive-sha256.txt
+      - name: Static installer review and safe lifecycle plan
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fLsS --retry 3 "https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/1c3a3a170071298a51db6ae096359fb9185e7cb4/qa/master-v0.1.0/inspect_candidate.py" -o /tmp/devnet-master-qa/inspect_candidate.py
+          python3 -m py_compile /tmp/devnet-master-qa/inspect_candidate.py
+          python3 /tmp/devnet-master-qa/inspect_candidate.py "/tmp/devnet-master-qa/$PACKAGE_ZIP" "$PACKAGE_SHA256" "$APP_ID" evidence/installation-inventory.json
+      - name: Preserve audit evidence (never upload original candidate again)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: master-qa-original-zip-inventory-v0.1.0
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
