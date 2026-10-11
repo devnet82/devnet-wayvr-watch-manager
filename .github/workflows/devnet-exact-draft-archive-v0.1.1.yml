@@ -1,0 +1,78 @@
+name: Devnet exact draft package archive QA v0.1.1
+on:
+  push:
+    branches:
+      - qa/exact-draft-archive-v0.1.1
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  exact-archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_TAG: qa-package-v0.1.34
+      PACKAGE_NAME: devnet-wayvr-watch-manager-v0.1.34.zip
+      PACKAGE_HASH: 1a0d8740649165f4bd0098b025a864bf784ac8e6aea046b70d80f7f5a94cae58
+      PACKAGE_BYTES: "7625"
+      RELEASE_ID: "409595368"
+    steps:
+      - name: Checkout isolated QA branch only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Confirm exact draft metadata and asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.tag_name,.draft,.assets[].name' | tee release-metadata.txt
+          python3 - <<'PY'
+          import json,os,subprocess
+          p=json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/releases/{os.environ["RELEASE_ID"]}']))
+          assert p['draft'] is True, "Candidate release was published unexpectedly"
+          assert p['tag_name']==os.environ['PACKAGE_TAG']
+          assets=[a for a in p['assets'] if a['name']==os.environ['PACKAGE_NAME']]
+          assert len(assets)==1
+          assert assets[0]['size']==int(os.environ['PACKAGE_BYTES'])
+          assert assets[0].get('digest')=='sha256:'+os.environ['PACKAGE_HASH']
+          print('EXACT_DRAFT_METADATA_PASS')
+          PY
+      - name: Download and cryptographically verify exact candidate ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packages evidence
+          gh release download "$PACKAGE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_NAME" --dir packages
+          test -s "packages/$PACKAGE_NAME"
+          printf '%s  %s\n' "$PACKAGE_HASH" "packages/$PACKAGE_NAME" | sha256sum -c - | tee evidence/sha256-check.txt
+          test "$(stat -c '%s' "packages/$PACKAGE_NAME")" = "$PACKAGE_BYTES"
+      - name: Run pinned read-only ZIP and syntax audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/0539e708f553521e8a460347c8040e35d53672ef/qa/archive-v0.1.1/audit_archives.py -o /tmp/devnet-archive-audit.py
+          python3 -m py_compile /tmp/devnet-archive-audit.py
+          python3 /tmp/devnet-archive-audit.py --expected-sha256 "$PACKAGE_HASH" --report-dir evidence "packages/$PACKAGE_NAME"
+          cat "evidence/$PACKAGE_NAME.qa.json"
+          python3 - <<'PY'
+          import json,os
+          p=f'evidence/{os.environ["PACKAGE_NAME"]}.qa.json'
+          report=json.load(open(p))
+          assert report['checks']['archive_integrity']['status']=='PASS'
+          assert report['checks']['unsafe_members']['status']=='PASS'
+          assert report['checks']['static_syntax']['status']=='PASS'
+          assert report['checks']['expected_sha256']['status']=='PASS'
+          assert report['master_qa']=='BLOCKED'
+          print('EXACT_DRAFT_ARCHIVE_TESTS_PASS; DEVICE_TESTS_NOT_PERFORMED')
+          PY
+      - name: Preserve exact archive QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devnet-exact-draft-qa-v0.1.1
+          path: |
+            evidence/
+            release-metadata.txt
+          retention-days: 14
+          if-no-files-found: warn
