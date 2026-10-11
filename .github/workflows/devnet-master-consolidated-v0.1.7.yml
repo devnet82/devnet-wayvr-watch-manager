@@ -1,0 +1,98 @@
+name: Devnet Master QA v0.1.7 exact original wayvr fail-closed gate
+on:
+  push:
+    branches:
+      - qa/master-consolidated-v0.1.7
+  workflow_dispatch: {}
+permissions:
+  contents: write
+  actions: read
+jobs:
+  exact-candidate-master-qa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP_ID: "wayvr"
+      PACKAGE_TAG: "qa-package-v0.1.34"
+      PACKAGE_ZIP: "devnet-wayvr-watch-manager-v0.1.34.zip"
+      PACKAGE_SHA256: "1a0d8740649165f4bd0098b025a864bf784ac8e6aea046b70d80f7f5a94cae58"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download immutable consolidated v0.1.7 QA evaluator
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/devnet-master-v0.1.7 evidence/"$APP_ID"/{native,inventory,installed,strict} evidence/reports
+          base=https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/08272cdb0780ac9cf1de58f77c707688cf91d160/qa/master-v0.1.7
+          curl -fLsS --retry 3 "$base/gate.py" -o /tmp/devnet-master-v0.1.7/gate.py
+          curl -fLsS --retry 3 "$base/candidates.json" -o /tmp/devnet-master-v0.1.7/candidates.json
+          python3 -m py_compile /tmp/devnet-master-v0.1.7/gate.py
+          python3 -m json.tool /tmp/devnet-master-v0.1.7/candidates.json >/dev/null
+      - name: Re-read exact original unpublished ZIP without repacking
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh release download "$PACKAGE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$PACKAGE_ZIP" --dir /tmp/devnet-master-v0.1.7
+          printf '%s  %s\n' "$PACKAGE_SHA256" "/tmp/devnet-master-v0.1.7/$PACKAGE_ZIP" | sha256sum -c -
+          cp "/tmp/devnet-master-v0.1.7/$PACKAGE_ZIP" "evidence/$APP_ID/candidate.zip"
+          printf '%s  %s\n' "$PACKAGE_SHA256" "evidence/$APP_ID/candidate.zip" | sha256sum -c -
+      - name: Fetch already completed ORIGINAL native ISO regression report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh run download 38135450307 --repo "$GITHUB_REPOSITORY" \
+            --name exact-native-cachyos-package-vm-v0.1.2 --dir "evidence/$APP_ID/native"
+          test -s "evidence/$APP_ID/native/qa-result.json"
+      - name: Fetch original ZIP inventory evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh run download 38139402496 --repo "$GITHUB_REPOSITORY" \
+            --name master-qa-original-zip-inventory-v0.1.0 --dir "evidence/$APP_ID/inventory"
+          test -s "evidence/$APP_ID/inventory/installation-inventory.json"
+      - name: Fetch installed GRUB BTRFS exact package and rollback guest evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh run download 38139671344 --repo "$GITHUB_REPOSITORY" \
+            --name master-qa-installed-grub-btrfs-vr-stack-v0.1.0 --dir "evidence/$APP_ID/installed"
+          test -s "evidence/$APP_ID/installed/app-lifecycle-result.json"
+          test -s "evidence/$APP_ID/installed/app-snapshot-rollback.txt"
+          test -s "evidence/$APP_ID/installed/installed-restored-pass.txt"
+      - name: Fetch independent v0.1.1 no-false-green strict evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gh run download 38140513036 --repo "$GITHUB_REPOSITORY" \
+            --name master-qa-strict-installed-gate-v0.1.1 --dir "evidence/$APP_ID/strict"
+          test -s "evidence/$APP_ID/strict/strict-gate-result.json"
+      - name: Mandatory v0.1.7 application release decision — FAIL unless all checks PASS
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p evidence/reports
+          if test -s /tmp/devnet-master-v0.1.7/gate.py &&
+             test -s /tmp/devnet-master-v0.1.7/candidates.json; then
+            python3 /tmp/devnet-master-v0.1.7/gate.py \
+              --manifest /tmp/devnet-master-v0.1.7/candidates.json \
+              --evidence-root evidence \
+              --app "$APP_ID" \
+              --output "evidence/reports/master-v0.1.7-$APP_ID.json"
+          else
+            printf '{"schema":"devnet-master-qa-report-v0.1.7","master_qa_release_approval":"BLOCKED","reason":"evaluator unavailable"}\n' \
+              >"evidence/reports/master-v0.1.7-$APP_ID.json"
+            exit 2
+          fi
+      - name: Preserve QA decision without publishing or uploading candidate archive
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devnet-master-qa-v0.1.7-wayvr
+          path: evidence/reports/
+          retention-days: 30
+          if-no-files-found: warn
