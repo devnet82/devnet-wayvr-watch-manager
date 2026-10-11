@@ -1,0 +1,47 @@
+name: Devnet Master QA strict installed-application gate v0.1.1
+on:
+  push:
+    branches: [qa/master-strict-gate-v0.1.1]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  check-preserved-guest-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: 38139671344
+      APP_ID: wayvr-watch-v0.1.34
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download complete existing guest evidence without rebuilding VM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p evidence
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name master-qa-installed-grub-btrfs-vr-stack-v0.1.0 --dir evidence
+          test -s evidence/app-lifecycle-result.json
+          test -s evidence/app-lifecycle.log
+          test -s evidence/app-snapshot-rollback.txt
+      - name: Strict independent decision based on guest outcomes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          curl -fLsS --retry 3 \
+            https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/dece894b14a34a697ee7471c9d0b10e891e735bf/qa/master-v0.1.1/strict_lifecycle_gate.py \
+            -o /tmp/strict_lifecycle_gate.py
+          python3 -m py_compile /tmp/strict_lifecycle_gate.py
+          python3 /tmp/strict_lifecycle_gate.py evidence "$APP_ID" evidence/strict-gate-result.json
+      - name: Preserve strict result even if lifecycle is blocked
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: master-qa-strict-installed-gate-v0.1.1
+          path: evidence/strict-gate-result.json
+          retention-days: 30
+          if-no-files-found: warn
