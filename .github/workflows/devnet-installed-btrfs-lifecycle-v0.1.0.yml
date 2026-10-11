@@ -1,0 +1,157 @@
+name: Devnet WayVR Watch installed CachyOS lifecycle QA v0.1.0
+on:
+  push:
+    branches: [qa/master-installed-lifecycle-v0.1.0]
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  installed-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PACKAGE_TAG: qa-package-v0.1.34
+      PACKAGE_ZIP: devnet-wayvr-watch-manager-v0.1.34.zip
+      PACKAGE_SHA256: 1a0d8740649165f4bd0098b025a864bf784ac8e6aea046b70d80f7f5a94cae58
+      APP_ID: wayvr-watch-v0.1.34
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare exact candidate and original tested installed-system VM scripts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -qq -y --no-install-recommends qemu-system-x86 qemu-utils mtools dosfstools
+          test -c /dev/kvm
+          sudo chmod 666 /dev/kvm
+          mkdir -p /tmp/devnet-qa evidence
+          base=https://iso.cachyos.org/desktop/260809
+          iso=cachyos-desktop-linux-260809.iso
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 1200 "$base/$iso.sha256" -o "/tmp/devnet-qa/$iso.sha256"
+          curl -fL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 1200 "$base/$iso" -o "/tmp/devnet-qa/$iso"
+          (cd /tmp/devnet-qa && sha256sum -c "$iso.sha256") | tee evidence/iso-sha256.txt
+          gh release download "$PACKAGE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PACKAGE_ZIP" --dir /tmp/devnet-qa
+          printf '%s  %s\n' "$PACKAGE_SHA256" "/tmp/devnet-qa/$PACKAGE_ZIP" | sha256sum -c - | tee evidence/app-sha256.txt
+          baseold=https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/1f6e23bc170009f15a90941b2fb81c9e280b59f2/qa/installed-v0.1.19
+          basenew=https://raw.githubusercontent.com/devnet82/devnet-cachyos-repair/92c35f9ad24b186a7f4e56b3953edf1e3675bbb8/qa/master-v0.1.0
+          curl -fLsS "$baseold/install-guest.sh" -o /tmp/devnet-qa/install-guest.sh
+          curl -fLsS "$baseold/qemu_control.py" -o /tmp/devnet-qa/qemu_control.py
+          curl -fLsS "$basenew/installed-boot-app-qa.sh" -o /tmp/devnet-qa/installed-boot-qa.sh
+          curl -fLsS "$basenew/guest_lifecycle.py" -o /tmp/devnet-qa/guest_lifecycle.py
+          python3 - <<'PY'
+          import os,pathlib
+          p=pathlib.Path('/tmp/devnet-qa/installed-boot-qa.sh')
+          s=p.read_text().replace('SHA_PLACEHOLDER',os.environ['PACKAGE_SHA256']).replace('APP_PLACEHOLDER',os.environ['APP_ID'])
+          assert 'SHA_PLACEHOLDER' not in s and 'APP_PLACEHOLDER' not in s
+          p.write_text(s)
+          PY
+          bash -n /tmp/devnet-qa/install-guest.sh /tmp/devnet-qa/installed-boot-qa.sh
+          python3 -m py_compile /tmp/devnet-qa/qemu_control.py /tmp/devnet-qa/guest_lifecycle.py
+      - name: Allocate guarded disposable disk and inject candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          qemu-img create -f qcow2 /tmp/devnet-qa/only-qa-system.qcow2 12G
+          truncate -s 128M /tmp/devnet-qa/only-qa-control.img
+          mkfs.vfat -F 32 -n DEVNETQA /tmp/devnet-qa/only-qa-control.img
+          image=/tmp/devnet-qa/only-qa-control.img
+          for n in install-guest.sh installed-boot-qa.sh guest_lifecycle.py; do
+            mcopy -i "$image" "/tmp/devnet-qa/$n" "::/$n"
+          done
+          mcopy -i "$image" "/tmp/devnet-qa/$PACKAGE_ZIP" ::/candidate.zip
+          mdir -i "$image" ::/ | tee evidence/control-disk-list.txt
+      - name: Install actual CachyOS BTRFS GRUB disk using previously verified workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 6144 -smp 4 \
+            -drive file=/tmp/devnet-qa/cachyos-desktop-linux-260809.iso,media=cdrom,if=ide \
+            -drive if=none,id=control,file=/tmp/devnet-qa/only-qa-control.img,format=raw \
+            -device virtio-blk-pci,drive=control,serial=DEVNETCONTROL \
+            -drive if=none,id=system,file=/tmp/devnet-qa/only-qa-system.qcow2,format=qcow2 \
+            -device virtio-blk-pci,drive=system,serial=DEVNETQAONLY,bootindex=1 \
+            -netdev user,id=qa-net -device virtio-net-pci,netdev=qa-net \
+            -boot order=d -vga std -display none -serial file:evidence/live-serial.log \
+            -monitor unix:/tmp/devnet-qa-live.sock,server=on,wait=off \
+            -daemonize -pidfile /tmp/devnet-qa-live.pid
+          sleep 125
+          python3 /tmp/devnet-qa/qemu_control.py /tmp/devnet-qa-live.sock begin-install
+          image=/tmp/devnet-qa/only-qa-control.img
+          for attempt in $(seq 1 150); do
+            mcopy -o -i "$image" ::/install.log evidence/install.log >/dev/null 2>&1 || true
+            if mcopy -o -i "$image" ::/install-ready.txt evidence/install-ready.txt >/dev/null 2>&1; then
+              echo INSTALLED_IMAGE_PREPARATION_REPORTED
+              break
+            fi
+            if grep -q '^INSTALL_SCRIPT_EXIT=[1-9]' evidence/install.log 2>/dev/null; then
+              echo INSTALL_SCRIPT_FAILED_EARLY
+              break
+            fi
+            sleep 7
+          done
+          mcopy -o -i "$image" ::/install.log evidence/install.log || true
+          mcopy -o -i "$image" ::/install-ready.txt evidence/install-ready.txt || true
+          mcopy -o -i "$image" ::/target-btrfs-uuid.txt evidence/target-btrfs-uuid.txt || true
+          grep -F INSTALLED_BTRFS_GRUB_PREPARED evidence/install-ready.txt
+          grep -F INSTALL_SCRIPT_EXIT=0 evidence/install.log
+      - name: Test app install uninstall and snapshot rollback in offline installed VM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if test -s /tmp/devnet-qa-live.pid; then kill "$(cat /tmp/devnet-qa-live.pid)" || true; fi
+          sleep 4
+          qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 -smp 4 \
+            -drive if=none,id=control,file=/tmp/devnet-qa/only-qa-control.img,format=raw \
+            -device virtio-blk-pci,drive=control,serial=DEVNETCONTROL \
+            -drive if=none,id=system,file=/tmp/devnet-qa/only-qa-system.qcow2,format=qcow2 \
+            -device virtio-blk-pci,drive=system,serial=DEVNETQAONLY,bootindex=1 \
+            -nic none -boot order=c -vga std -display none -serial file:evidence/installed-serial.log \
+            -monitor unix:/tmp/devnet-qa-installed.sock,server=on,wait=off \
+            -daemonize -pidfile /tmp/devnet-qa-installed.pid
+          image=/tmp/devnet-qa/only-qa-control.img
+          for attempt in $(seq 1 80); do
+            for n in installed-boot.log installed-first-pass.txt app-lifecycle-result.json app-lifecycle.log app-snapshot-rollback.txt restore-grub-prepared.txt installed-restored-pass.txt; do
+              mcopy -o -i "$image" "::/$n" "evidence/$n" >/dev/null 2>&1 || true
+            done
+            if grep -q INSTALLED_GRUB_BTRFS_REBOOT_ROLLBACK_PASS evidence/installed-restored-pass.txt 2>/dev/null; then
+              echo INSTALLED_APP_SNAPSHOT_ROLLBACK_REBOOT_VERIFIED
+              break
+            fi
+            sleep 8
+          done
+          grep -F INSTALLED_GRUB_BTRFS_FIRST_BOOT_PASS evidence/installed-first-pass.txt
+          grep -F INSTALLED_GRUB_BTRFS_REBOOT_ROLLBACK_PASS evidence/installed-restored-pass.txt
+          grep -F APP_BTRFS_SNAPSHOT_ROLLBACK_PASS evidence/app-snapshot-rollback.txt
+          test -s evidence/app-lifecycle-result.json
+      - name: Preserve all evidence even on test failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: master-qa-installed-grub-btrfs-vr-stack-v0.1.0
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Gate exact installed app checks without claiming hardware acceptance
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('evidence/app-lifecycle-result.json')
+          assert p.exists(), 'NOT_TESTED: installed guest report not preserved'
+          r=json.loads(p.read_text())
+          assert r['format']=='devnet-installed-lifecycle-v0.1.0'
+          assert r['master_qa']=='BLOCKED'
+          assert r['hardware_acceptance']=='NOT_TESTED'
+          for name in ('isolated_installed_cachyos','original_zip','package_checksum_and_unzip'):
+            assert r['checks'].get(name,{}).get('status')=='PASS',(name,r)
+          for name in ('clean_install','uninstall'):
+            print('APP_CHECK',name,r['checks'].get(name,{}))
+          print('APP_INTERNAL_ROLLBACK',r['app_internal_rollback'])
+          print('GUI_TRAY',r['gui_tray'])
+          print('PHYSICAL_HARDWARE',r['hardware_acceptance'])
+          PY
